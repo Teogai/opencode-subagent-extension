@@ -1,69 +1,56 @@
-# opencode-agent-messages
+# opencode-subagent-extension
 
-An [OpenCode](https://opencode.ai) plugin that lets agent sessions on one OpenCode server start and message each other across sibling folders. OpenCode's own subagent tool starts a child only in its parent's folder and messages only its own children.
+An [OpenCode](https://opencode.ai) plugin that adds an optional `folder` input to OpenCode's built-in `subagent` tool. A child started with that input works in another repo on the same server, with that repo's `AGENTS.md` and skills, and still reports back to the session that started it.
 
-It was built for a home-repo setup: a session in one repo hands work to sessions in the repos beside it, and gets their answers back.
+## Why it is needed
 
-## Tools
+OpenCode creates a session either in a folder or under a parent, never both (`core/src/session.ts:98`). The `subagent` tool starts a child in its parent's folder, so a child cannot both report to its caller and work in another repo.
 
-- `agent_start(folder, message, role?, model?, title?)` starts a session in `folder` and sends it `message`. It returns at once with the new session's ID.
-  - `folder` must sit beside the caller's project, for example `../other-repo`.
-  - `role` is an agent ID defined at that folder. Without it, the folder's default agent runs.
-  - `model` is `provider/model` or `provider/model#variant`, for example `claude-agent/opus`. Without a role or a model, the session takes the caller's model.
-- `agent_send(sessionID, message)` sends a message to a session by its ID. A busy session gets it when its current run ends.
+## How it works
 
-## Replies
+The plugin creates the child under the caller, moves it to the folder you asked for, and hands it to the original `subagent` code as an existing child through `sessionID`. OpenCode prompts the child and sends the parent a report each time the child goes idle. OpenCode keeps an undelivered report across a server restart.
 
-Every message from these tools tells its receiver that its last message goes back as its reply. After sending, the sender's side waits for the receiver to go idle. If the receiver did not answer with `agent_send`, its last message is forwarded to the sender, headed `[Reply from agent session …]`. A run that ends with no text still sends a note with the run's outcome. Forwarded replies expect no answer, so nothing is forwarded back from them.
+## Rules
 
-A session started with `agent_start` sits one level below the session that started it, and a session a person started is at level 0. `agent_start` refuses to start a session below level 3 and tells the caller so.
-
-Sessions started with `agent_start` have the `question` tool denied. Nobody watches them, so a question goes back in their last message instead.
+- The folder must sit in the same parent folder as the caller's project, for example `../other-repo`.
+- `folder` applies only to a new child. Never pass it with `sessionID`.
+- The plugin denies the `question` tool in the child and gives the child the caller's session permissions.
 
 ## Permissions
 
-Both tools ask OpenCode for permission before they act, as built-in tools do, so an agent's `permissions` rules apply to them:
-
-| Action | Resource |
-| --- | --- |
-| `agent_start` | the role it starts, or `default` when none is given |
-| `agent_send` | the target session's ID |
-
-With no rules, both are allowed. For example, an agent that may start only `supervisor` sessions:
+The plugin starts the child through OpenCode's own `subagent` permission, which checks the agent ID (`core/src/tool/plugin/subagent.ts:138-145`), so your `permissions` rules apply. An agent that may start only `lead` and `general`:
 
 ```yaml
 permissions:
-  - action: agent_start
+  - action: subagent
     resource: "*"
     effect: deny
-  - action: agent_start
-    resource: supervisor
+  - action: subagent
+    resource: lead
+    effect: allow
+  - action: subagent
+    resource: general
     effect: allow
 ```
 
+## Nesting
+
+OpenCode's `experimental.subagent_depth` caps how deep children may start children. Its default is 1 (`core/src/tool/plugin/subagent.ts:129`).
+
 ## Install
 
-Add it to a repo as a git subtree, where OpenCode finds it on its own:
+Add the plugin's folder path to the `plugins` list in the global config, `~/.config/opencode/opencode.jsonc`. Every session that starts a child needs the plugin, so a config in one repo is not enough.
 
-```sh
-git subtree add --prefix .opencode/plugins/agent-messages https://github.com/Teogai/opencode-agent-messages.git main --squash
+```jsonc
+{
+  "plugins": ["/home/you/projects/opencode-subagent-extension"]
+}
 ```
-
-Update it the same way:
-
-```sh
-git subtree pull --prefix .opencode/plugins/agent-messages https://github.com/Teogai/opencode-agent-messages.git main --squash
-```
-
-Change the plugin here, not in a repo's copy, so every copy can pull the change.
 
 ## Limits
 
-- A server restart drops a wait in progress, so a reply that lands after the restart is not forwarded.
-- Only the depth of starts is capped. Two sessions can keep messaging each other with `agent_send`.
-- If the receiver's context is compacted before it answers, the sent message can no longer be found, and the sender gets a "no reply found" note.
-- Unless a rule denies it, any session can message any session on the server. Permission rules shape what an agent does, but they are no security boundary: an agent with a shell can still call OpenCode's API.
 - There are no tests yet.
+- Permission rules shape what an agent does, but they are no security boundary. An agent with a shell can still call OpenCode's API.
 
 ## Licence
 
