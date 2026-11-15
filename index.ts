@@ -5,14 +5,14 @@ import { randomUUID } from "node:crypto"
 import { Plugin } from "@opencode/plugin"
 
 const META_KEY = "agentMessage"
-const MAX_HOPS = 8
+const MAX_DEPTH = 3
 const ADMIT_CHECKS = 60
 const ADMIT_DELAY_MS = 2000
 
 type StartInput = { folder: string; message: string; role?: string; model?: string; title?: string }
 type SendInput = { sessionID: string; message: string }
 type CallContext = { sessionID: string; agent: string; messageID: string; id: string }
-type Meta = { from: string; hop: number; id: string; expectsReply: boolean }
+type Meta = { from: string; id: string; expectsReply: boolean }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -37,12 +37,12 @@ export default Plugin.define({
       return meta as unknown as Meta
     }
 
-    // A person's message starts a new chain, so its hop count is 0.
-    const lastHop = async (sessionID: string) => {
-      const messages = await ctx.session.context({ sessionID })
-      const last = messages.findLast((message) => message.type === "user")
-      const hop = last ? metaOf(last)?.hop : undefined
-      return typeof hop === "number" ? hop : 0
+    const depthOf = async (sessionID: string) => {
+      const session = await ctx.session.get({ sessionID })
+      const meta = session.metadata?.[META_KEY]
+      if (!meta || typeof meta !== "object" || Array.isArray(meta)) return 0
+      const depth = (meta as { depth?: unknown }).depth
+      return typeof depth === "number" ? depth : 0
     }
 
     const textOf = (message: Message) =>
@@ -62,7 +62,7 @@ export default Plugin.define({
           (part.state as { input?: { sessionID?: unknown } }).input?.sessionID === sessionID,
       )
 
-    const post = async (from: string, to: string, text: string, hop: number, expectsReply: boolean) => {
+    const post = async (from: string, to: string, text: string, expectsReply: boolean) => {
       const sender = await ctx.session.get({ sessionID: from })
       const id = randomUUID()
       const header = expectsReply
@@ -76,14 +76,14 @@ export default Plugin.define({
         sessionID: to,
         text: `${header}\n\n${text}`,
         delivery: "queue",
-        metadata: { [META_KEY]: { from, hop, id, expectsReply } },
+        metadata: { [META_KEY]: { from, id, expectsReply } },
       })
       return id
     }
 
     // The target may work in a folder where this plugin is not loaded, so the sender's side waits for it to go idle
     // and forwards its last message, unless it already answered with agent_send.
-    const forwardReply = async (from: string, to: string, id: string, hop: number) => {
+    const forwardReply = async (from: string, to: string, id: string) => {
       for (let check = 0; check < ADMIT_CHECKS; check++) {
         await ctx.session.wait({ sessionID: to })
         const messages = await ctx.session.context({ sessionID: to })
@@ -94,27 +94,21 @@ export default Plugin.define({
           continue
         }
         if (replies.some((message) => sentTo(message, from))) return
-        if (hop + 1 > MAX_HOPS) return
         const text = replies.map(textOf).findLast((value) => value.length > 0)
         const outcome = (await ctx.session.get({ sessionID: to })).outcome ?? "unknown"
-        await post(to, from, text ?? `(Session ${to} ended its run, outcome ${outcome}, with no reply text.)`, hop + 1, false)
+        await post(to, from, text ?? `(Session ${to} ended its run, outcome ${outcome}, with no reply text.)`, false)
         return
       }
-      await post(to, from, `(No reply found from session ${to} after ${ADMIT_CHECKS} checks.)`, hop + 1, false)
+      await post(to, from, `(No reply found from session ${to} after ${ADMIT_CHECKS} checks.)`, false)
     }
 
     const deliver = async (from: string, to: string, text: string) => {
-      const hop = (await lastHop(from)) + 1
-      if (hop > MAX_HOPS) {
-        return `Not sent: ${MAX_HOPS} messages have passed between agents since a person last wrote. Ask a person how to go on.`
-      }
-      const id = await post(from, to, text, hop, true)
-      void forwardReply(from, to, id, hop)
+      const id = await post(from, to, text, true)
+      void forwardReply(from, to, id)
         .catch((error) =>
-          post(to, from, `(Could not collect the reply from session ${to}: ${String(error)})`, hop + 1, false),
+          post(to, from, `(Could not collect the reply from session ${to}: ${String(error)})`, false),
         )
         .catch(() => undefined)
-      return undefined
     }
 
     const permit = (action: string, resource: string, context: CallContext) =>
@@ -160,14 +154,19 @@ export default Plugin.define({
           if (model !== undefined && !chosen) {
             return { content: `Not started: model ${model} is not provider/model or provider/model#variant.` }
           }
+          const depth = (await depthOf(context.sessionID)) + 1
+          if (depth > MAX_DEPTH) {
+            return { content: `Not started: the new session would be ${depth} sessions deep, and the limit is ${MAX_DEPTH}. Ask a person how to go on.` }
+          }
           const created = await ctx.session.create({
             location: { directory },
             title: title ?? `From ${caller.title ?? context.sessionID}`,
             ...(role ? { agent: role } : {}),
             ...(chosen ? { model: chosen } : !role && caller.model ? { model: caller.model } : {}),
+            metadata: { [META_KEY]: { depth } },
+            permissions: [{ action: "question", resource: "*", effect: "deny" }],
           } as Parameters<typeof ctx.session.create>[0])
-          const refused = await deliver(context.sessionID, created.id, message)
-          if (refused) return { content: refused }
+          await deliver(context.sessionID, created.id, message)
           return { content: `Started session ${created.id} in ${directory}. Its reply will arrive here as a message.` }
         },
       })
@@ -195,8 +194,8 @@ export default Plugin.define({
           if (sessionID === context.sessionID) return { content: "Not sent: that is this session." }
           const target = await ctx.session.get({ sessionID }).catch(() => undefined)
           if (!target) return { content: `Not sent: no session ${sessionID}.` }
-          const refused = await deliver(context.sessionID, sessionID, message)
-          return { content: refused ?? `Sent to ${sessionID}.` }
+          await deliver(context.sessionID, sessionID, message)
+          return { content: `Sent to ${sessionID}.` }
         },
       })
     })

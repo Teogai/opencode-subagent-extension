@@ -16,7 +16,9 @@ It was built for a home-repo setup: a session in one repo hands work to sessions
 
 Every message from these tools tells its receiver that its last message goes back as its reply. After sending, the sender's side waits for the receiver to go idle. If the receiver did not answer with `agent_send`, its last message is forwarded to the sender, headed `[Reply from agent session …]`. A run that ends with no text still sends a note with the run's outcome. Forwarded replies expect no answer, so nothing is forwarded back from them.
 
-Each message carries a hop count. After 8 messages between agents with no person in between, the tools refuse to send.
+A session started with `agent_start` sits one level below the session that started it, and a session a person started is at level 0. `agent_start` refuses to start a session below level 3 and tells the caller so.
+
+Sessions started with `agent_start` have the `question` tool denied. Nobody watches them, so a question goes back in their last message instead.
 
 ## Permissions
 
@@ -58,6 +60,7 @@ Change the plugin here, not in a repo's copy, so every copy can pull the change.
 ## Limits
 
 - A server restart drops a wait in progress, so a reply that lands after the restart is not forwarded.
+- Only the depth of starts is capped. Two sessions can keep messaging each other with `agent_send`.
 - If the receiver's context is compacted before it answers, the sent message can no longer be found, and the sender gets a "no reply found" note.
 - Unless a rule denies it, any session can message any session on the server. Permission rules shape what an agent does, but they are no security boundary: an agent with a shell can still call OpenCode's API.
 - There are no tests yet.
