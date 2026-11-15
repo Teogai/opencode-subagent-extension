@@ -1,4 +1,3 @@
-// Adds a folder input to OpenCode's subagent tool, so a child can work in another repo on the same server.
 // OpenCode creates a session either in a folder or under a parent, never both, so the child is created under
 // its caller, moved, and then handed to the subagent tool as an existing child.
 import path from "node:path"
