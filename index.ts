@@ -11,6 +11,7 @@ const ADMIT_DELAY_MS = 2000
 
 type StartInput = { folder: string; message: string; role?: string; model?: string; title?: string }
 type SendInput = { sessionID: string; message: string }
+type CallContext = { sessionID: string; agent: string; messageID: string; id: string }
 type Meta = { from: string; hop: number; id: string; expectsReply: boolean }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -116,6 +117,16 @@ export default Plugin.define({
       return undefined
     }
 
+    const permit = (action: string, resource: string, context: CallContext) =>
+      ctx.permission.assert({
+        sessionID: context.sessionID,
+        agent: context.agent,
+        action,
+        resources: [resource],
+        save: [resource],
+        source: { type: "tool", messageID: context.messageID, id: context.id },
+      })
+
     const registration = await ctx.tool.transform((editor) => {
       editor.add({
         name: "agent_start",
@@ -139,6 +150,7 @@ export default Plugin.define({
         options: { codemode: false },
         execute: async (input, context) => {
           const { folder, message, role, model, title } = input as StartInput
+          await permit("agent_start", role ?? "default", context)
           const caller = await ctx.session.get({ sessionID: context.sessionID })
           const directory = path.resolve(caller.location.directory, folder)
           if (path.dirname(directory) !== projectsRoot) {
@@ -179,6 +191,7 @@ export default Plugin.define({
         options: { codemode: false },
         execute: async (input, context) => {
           const { sessionID, message } = input as SendInput
+          await permit("agent_send", sessionID, context)
           if (sessionID === context.sessionID) return { content: "Not sent: that is this session." }
           const target = await ctx.session.get({ sessionID }).catch(() => undefined)
           if (!target) return { content: `Not sent: no session ${sessionID}.` }

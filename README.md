@@ -18,6 +18,27 @@ Every message from these tools tells its receiver that its last message goes bac
 
 Each message carries a hop count. After 8 messages between agents with no person in between, the tools refuse to send.
 
+## Permissions
+
+Both tools ask OpenCode for permission before they act, as built-in tools do, so an agent's `permissions` rules apply to them:
+
+| Action | Resource |
+| --- | --- |
+| `agent_start` | the role it starts, or `default` when none is given |
+| `agent_send` | the target session's ID |
+
+With no rules, both are allowed. For example, an agent that may start only `supervisor` sessions:
+
+```yaml
+permissions:
+  - action: agent_start
+    resource: "*"
+    effect: deny
+  - action: agent_start
+    resource: supervisor
+    effect: allow
+```
+
 ## Install
 
 Add it to a repo as a git subtree, where OpenCode finds it on its own:
@@ -38,7 +59,7 @@ Change the plugin here, not in a repo's copy, so every copy can pull the change.
 
 - A server restart drops a wait in progress, so a reply that lands after the restart is not forwarded.
 - If the receiver's context is compacted before it answers, the sent message can no longer be found, and the sender gets a "no reply found" note.
-- Any session with these tools can message any session on the server. Tool limits on a role shape its behaviour, but they are no security boundary.
+- Unless a rule denies it, any session can message any session on the server. Permission rules shape what an agent does, but they are no security boundary: an agent with a shell can still call OpenCode's API.
 - There are no tests yet.
 
 ## Licence
